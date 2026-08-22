@@ -1,0 +1,597 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Verify annotated tag is reachable from main
+        shell: bash
+        run: bash scripts/verify-release-ref.sh "$GITHUB_REF" origin/main
+      - name: Require successful main CI for tagged commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          result="$(mktemp)"
+          trap 'rm -f "$result"' EXIT
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&event=push&status=completed&per_page=100" \
+            >"$result"
+          jq -e --arg sha "$GITHUB_SHA" '
+            .workflow_runs
+            | any(
+                .head_sha == $sha
+                and .head_branch == "main"
+                and .event == "push"
+                and .status == "completed"
+                and .conclusion == "success"
+              )
+          ' "$result" >/dev/null || {
+            echo "The tagged commit has no successful completed main CI run." >&2
+            exit 1
+          }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+          cache: true
+      - name: Validate semantic version tag
+        shell: bash
+        run: bash scripts/validate-version.sh "${GITHUB_REF_NAME#v}"
+      - name: Install completion test shells
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes fish shellcheck zsh
+      - name: Verify source
+        run: make all
+      - name: Build and verify deterministic release inputs
+        shell: bash
+        run: bash scripts/verify-release.sh "${GITHUB_REF_NAME#v}" dist
+      - name: Transfer verified base artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: timer-cli-base-${{ github.ref_name }}-${{ github.run_id }}
+          path: dist/*
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  snap:
+    needs: verify
+    name: Snap (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download verified base artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: timer-cli-base-${{ github.ref_name }}-${{ github.run_id }}
+          path: dist
+      - name: Prepare native Snapcraft project
+        shell: bash
+        run: bash scripts/prepare-snap.sh "${GITHUB_REF_NAME#v}" "${{ matrix.arch }}" dist "build/snap-${{ matrix.arch }}"
+      - name: Build native snap
+        id: snapcraft
+        uses: snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1
+        with:
+          path: build/snap-${{ matrix.arch }}
+      - name: Install and exercise snap
+        shell: bash
+        env:
+          SNAP_PATH: ${{ steps.snapcraft.outputs.snap }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          sudo snap install --dangerous "$SNAP_PATH"
+          test "$(snap run timer-cli version)" = "timer-cli $version (commit $(git rev-parse --short=12 HEAD), built $(date -u -d "@$(git log -1 --format=%ct)" +%Y-%m-%dT%H:%M:%SZ))"
+          test "$(snap run timer-cli 1 segundo --lang es --final-only --no-bell)" = "¡Se acabó el tiempo!"
+          test -f /snap/timer-cli/current/share/doc/timer-cli/LICENSE
+          test -f /snap/timer-cli/current/share/doc/timer-cli/THIRD_PARTY_LICENSES
+          sudo snap remove timer-cli
+          mkdir -p dist-snap
+          cp -- "$SNAP_PATH" "dist-snap/timer-cli_${version}_${{ matrix.arch }}.snap"
+      - name: Transfer tested native snap
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: timer-cli-snap-${{ matrix.arch }}-${{ github.ref_name }}-${{ github.run_id }}
+          path: dist-snap/*.snap
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  assemble:
+    needs:
+      - verify
+      - snap
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Download verified base artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: timer-cli-base-${{ github.ref_name }}-${{ github.run_id }}
+          path: dist
+      - name: Download verified amd64 snap
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: timer-cli-snap-amd64-${{ github.ref_name }}-${{ github.run_id }}
+          path: dist
+      - name: Download verified arm64 snap
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: timer-cli-snap-arm64-${{ github.ref_name }}-${{ github.run_id }}
+          path: dist
+      - name: Assemble final checksum manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          expected="$(mktemp)"
+          actual="$(mktemp)"
+          trap 'rm -f "$expected" "$actual"' EXIT
+          printf '%s\n' \
+            SHA256SUMS \
+            timer-cli.rb \
+            "timer-cli_${version}_aur.tar.gz" \
+            "timer-cli_${version}_darwin_amd64.tar.gz" \
+            "timer-cli_${version}_darwin_arm64.tar.gz" \
+            "timer-cli_${version}_linux_amd64.tar.gz" \
+            "timer-cli_${version}_linux_arm64.tar.gz" \
+            "timer-cli_${version}_source.tar.gz" \
+            "timer-cli_${version}_amd64.snap" \
+            "timer-cli_${version}_arm64.snap" | sort >"$expected"
+          find dist -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort >"$actual"
+          diff -u "$expected" "$actual"
+          if find dist -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "release artifact directory contains a non-regular entry" >&2
+            exit 1
+          fi
+          (
+            cd dist
+            sha256sum timer-cli.rb timer-cli_*.tar.gz timer-cli_*.snap | sort -k2 >SHA256SUMS
+          )
+      - name: Transfer complete release artifact set
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: timer-cli-release-${{ github.ref_name }}-${{ github.run_id }}
+          path: dist/*
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  attest:
+    needs: assemble
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download verified release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: timer-cli-release-${{ github.ref_name }}-${{ github.run_id }}
+          path: dist
+      - name: Validate transferred artifact set
+        shell: bash
+        run: &validate-transferred-artifacts |
+          # BEGIN TRANSFERRED ARTIFACT VALIDATION
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          expected="$(mktemp)"
+          actual="$(mktemp)"
+          actual_sums="$(mktemp)"
+          trap 'rm -f "$expected" "$actual" "$actual_sums"' EXIT
+          printf '%s\n' \
+            SHA256SUMS \
+            timer-cli.rb \
+            "timer-cli_${version}_aur.tar.gz" \
+            "timer-cli_${version}_darwin_amd64.tar.gz" \
+            "timer-cli_${version}_darwin_arm64.tar.gz" \
+            "timer-cli_${version}_linux_amd64.tar.gz" \
+            "timer-cli_${version}_linux_arm64.tar.gz" \
+            "timer-cli_${version}_source.tar.gz" \
+            "timer-cli_${version}_amd64.snap" \
+            "timer-cli_${version}_arm64.snap" | sort >"$expected"
+          find dist -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort >"$actual"
+          diff -u "$expected" "$actual"
+          if find dist -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "release artifact directory contains a non-regular entry" >&2
+            exit 1
+          fi
+          (
+            cd dist
+            sha256sum \
+              timer-cli.rb \
+              "timer-cli_${version}_aur.tar.gz" \
+              "timer-cli_${version}_darwin_amd64.tar.gz" \
+              "timer-cli_${version}_darwin_arm64.tar.gz" \
+              "timer-cli_${version}_linux_amd64.tar.gz" \
+              "timer-cli_${version}_linux_arm64.tar.gz" \
+              "timer-cli_${version}_source.tar.gz" \
+              "timer-cli_${version}_amd64.snap" \
+              "timer-cli_${version}_arm64.snap" | sort -k2
+          ) >"$actual_sums"
+          diff -u dist/SHA256SUMS "$actual_sums"
+          # END TRANSFERRED ARTIFACT VALIDATION
+      - name: Attest verified release artifacts
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+
+  release:
+    needs:
+      - assemble
+      - attest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: timer-cli-release-${{ github.ref_name }}-${{ github.run_id }}
+          path: dist
+      - name: Validate transferred artifact set
+        shell: bash
+        run: *validate-transferred-artifacts
+      - name: Publish complete verified GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # BEGIN GUARDED DRAFT RELEASE PUBLICATION
+          set -euo pipefail
+
+          readonly tag="$GITHUB_REF_NAME"
+          readonly version="${tag#v}"
+          readonly repository="$GH_REPO"
+          readonly repository_owner="${repository%%/*}"
+          readonly repository_name="${repository#*/}"
+          readonly -a asset_names=(
+            SHA256SUMS
+            timer-cli.rb
+            "timer-cli_${version}_aur.tar.gz"
+            "timer-cli_${version}_darwin_amd64.tar.gz"
+            "timer-cli_${version}_darwin_arm64.tar.gz"
+            "timer-cli_${version}_linux_amd64.tar.gz"
+            "timer-cli_${version}_linux_arm64.tar.gz"
+            "timer-cli_${version}_source.tar.gz"
+            "timer-cli_${version}_amd64.snap"
+            "timer-cli_${version}_arm64.snap"
+          )
+          expected_assets_json="$(printf '%s\n' "${asset_names[@]}" | jq -R . | jq -s .)"
+          readonly expected_assets_json
+          temporary_directory="$(mktemp -d)"
+          readonly temporary_directory
+          readonly release_state_file="$temporary_directory/release-state.json"
+          readonly remote_assets_file="$temporary_directory/remote-assets.json"
+          readonly live_ref_file="$temporary_directory/live-ref.json"
+          readonly live_tag_file="$temporary_directory/live-tag.json"
+          readonly upload_response_file="$temporary_directory/upload-response.json"
+          readonly publish_response_file="$temporary_directory/publish-response.json"
+          trap 'rm -rf -- "$temporary_directory"' EXIT
+
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Unexpected release tag: $tag" >&2
+            exit 1
+          fi
+          if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "Unexpected repository identifier: $repository" >&2
+            exit 1
+          fi
+          if [[ ! "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Unexpected workflow commit: $GITHUB_SHA" >&2
+            exit 1
+          fi
+
+          verify_live_tag_target() {
+            local expected_ref="refs/tags/$tag"
+            local object_sha
+            local object_type
+            local peel_depth=0
+
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              "repos/${repository}/git/ref/tags/${tag}" \
+              >"$live_ref_file"
+            if ! jq -e --arg expectedRef "$expected_ref" '
+              type == "object"
+              and .ref == $expectedRef
+              and (.object | type == "object")
+              and .object.type == "tag"
+              and (.object.sha | type == "string")
+              and (.object.sha | test("^[0-9a-f]{40}$"))
+            ' "$live_ref_file" >/dev/null; then
+              echo "GitHub returned an invalid annotated release tag reference." >&2
+              exit 1
+            fi
+            object_type="$(jq -r '.object.type' "$live_ref_file")"
+            object_sha="$(jq -r '.object.sha' "$live_ref_file")"
+
+            while [[ "$object_type" == tag ]]; do
+              peel_depth=$((peel_depth + 1))
+              if (( peel_depth > 16 )); then
+                echo "Annotated release tag chain is unexpectedly deep." >&2
+                exit 1
+              fi
+              gh api \
+                -H "Accept: application/vnd.github+json" \
+                "repos/${repository}/git/tags/${object_sha}" \
+                >"$live_tag_file"
+              if ! jq -e --arg expectedSha "$object_sha" '
+                type == "object"
+                and .sha == $expectedSha
+                and (.object | type == "object")
+                and (.object.type == "tag" or .object.type == "commit")
+                and (.object.sha | type == "string")
+                and (.object.sha | test("^[0-9a-f]{40}$"))
+              ' "$live_tag_file" >/dev/null; then
+                echo "GitHub returned an invalid annotated release tag object." >&2
+                exit 1
+              fi
+              object_type="$(jq -r '.object.type' "$live_tag_file")"
+              object_sha="$(jq -r '.object.sha' "$live_tag_file")"
+            done
+
+            if [[ "$object_sha" != "$GITHUB_SHA" ]]; then
+              echo "Live release tag no longer targets the workflow commit." >&2
+              exit 1
+            fi
+          }
+
+          query_release() {
+            gh api graphql \
+              -f "owner=$repository_owner" \
+              -f "name=$repository_name" \
+              -f "tagName=$tag" \
+              -f query="
+                query(\$owner: String!, \$name: String!, \$tagName: String!) {
+                  repository(owner: \$owner, name: \$name) {
+                    release(tagName: \$tagName) {
+                      databaseId
+                      isDraft
+                    }
+                  }
+                }
+              " >"$release_state_file"
+            jq -e '.data.repository != null' "$release_state_file" >/dev/null
+          }
+
+          require_release_id() {
+            local release_id
+            release_id="$(jq -r '.data.repository.release.databaseId // empty' "$release_state_file")"
+            if [[ ! "$release_id" =~ ^[0-9]+$ ]]; then
+              echo "Release database ID is unavailable or invalid." >&2
+              exit 1
+            fi
+            printf '%s\n' "$release_id"
+          }
+
+          assert_same_release_state() {
+            local expected_release_id="$1"
+            local expected_is_draft="$2"
+            local actual_release_id
+            query_release
+            actual_release_id="$(require_release_id)"
+            if [[ "$actual_release_id" != "$expected_release_id" ]]; then
+              echo "Release identity changed while publishing or verifying." >&2
+              exit 1
+            fi
+            if ! jq -e \
+              --argjson expectedIsDraft "$expected_is_draft" \
+              '.data.repository.release.isDraft == $expectedIsDraft' \
+              "$release_state_file" >/dev/null; then
+              if [[ "$expected_is_draft" == true ]]; then
+                echo "Refusing to upload to a published release." >&2
+              else
+                echo "Published release state could not be verified." >&2
+              fi
+              exit 1
+            fi
+          }
+
+          assert_same_draft() {
+            assert_same_release_state "$1" true
+          }
+
+          assert_same_published() {
+            assert_same_release_state "$1" false
+          }
+
+          query_assets() {
+            local release_id="$1"
+            gh api --paginate --slurp \
+              -H "Accept: application/vnd.github+json" \
+              "repos/${repository}/releases/${release_id}/assets?per_page=100" \
+              >"$remote_assets_file"
+            if ! jq -e '
+              type == "array"
+              and all(.[]; type == "array")
+              and all(.[][];
+                (.id | type == "number")
+                and (.name | type == "string")
+                and (.state | type == "string"))
+            ' "$remote_assets_file" >/dev/null; then
+              echo "GitHub returned an invalid release asset list." >&2
+              exit 1
+            fi
+          }
+
+          download_and_compare_asset() {
+            local asset_name="$1"
+            local asset_id
+            local remote_path="$temporary_directory/remote-$asset_name"
+            asset_id="$(
+              jq -r --arg name "$asset_name" \
+                '.[][] | select(.name == $name) | .id' \
+                "$remote_assets_file"
+            )"
+            if [[ ! "$asset_id" =~ ^[0-9]+$ ]]; then
+              echo "Remote asset ID is unavailable or invalid for $asset_name." >&2
+              exit 1
+            fi
+            gh api \
+              -H "Accept: application/octet-stream" \
+              "repos/${repository}/releases/assets/${asset_id}" \
+              >"$remote_path"
+            if ! cmp --silent -- "dist/$asset_name" "$remote_path"; then
+              echo "Remote release asset differs from the built asset: $asset_name" >&2
+              exit 1
+            fi
+          }
+
+          verify_complete_release_assets() {
+            local release_id="$1"
+            local asset_name
+            query_assets "$release_id"
+            if ! jq -e --argjson expected "$expected_assets_json" '
+              ([ .[][] | .name ] | sort) == ($expected | sort)
+              and all(.[][]; .state == "uploaded")
+            ' "$remote_assets_file" >/dev/null; then
+              echo "Release assets are missing, duplicated, unexpected, or incomplete." >&2
+              exit 1
+            fi
+            for asset_name in "${asset_names[@]}"; do
+              download_and_compare_asset "$asset_name"
+            done
+          }
+
+          # Stage 1: Query or create the exact release.
+          query_release
+          if jq -e '.data.repository.release == null' "$release_state_file" >/dev/null; then
+            verify_live_tag_target
+            gh release create "$tag" \
+              --repo "$repository" \
+              --draft \
+              --verify-tag \
+              --title "$version" \
+              --generate-notes
+            query_release
+          fi
+          target_release_id="$(require_release_id)"
+          readonly target_release_id
+          release_is_draft="$(jq -r '.data.repository.release.isDraft' "$release_state_file")"
+          readonly release_is_draft
+          if [[ "$release_is_draft" == false ]]; then
+            # A matching published release is a read-only successful rerun.
+            verify_complete_release_assets "$target_release_id"
+            assert_same_published "$target_release_id"
+          elif [[ "$release_is_draft" == true ]]; then
+            # Stage 2: Resume only compatible assets, then upload missing assets.
+            query_assets "$target_release_id"
+            if ! jq -e --argjson expected "$expected_assets_json" '
+              [ .[][] | .name ] as $names
+              | ($names | length) == ($names | unique | length)
+                and all($names[]; . as $name | $expected | index($name) != null)
+            ' "$remote_assets_file" >/dev/null; then
+              echo "Draft contains an unexpected or duplicate release asset." >&2
+              exit 1
+            fi
+
+            for asset_name in "${asset_names[@]}"; do
+              match_count="$(
+                jq --arg name "$asset_name" \
+                  '[ .[][] | select(.name == $name) ] | length' \
+                  "$remote_assets_file"
+              )"
+              case "$match_count" in
+                0)
+                  assert_same_draft "$target_release_id"
+                  verify_live_tag_target
+                  curl --fail-with-body --silent --show-error \
+                    --request POST \
+                    -H "Accept: application/vnd.github+json" \
+                    -H "Authorization: Bearer $GH_TOKEN" \
+                    -H "Content-Type: application/octet-stream" \
+                    --data-binary "@dist/$asset_name" \
+                    "https://uploads.github.com/repos/${repository}/releases/${target_release_id}/assets?name=${asset_name}" \
+                    >"$upload_response_file"
+                  if ! jq -e --arg name "$asset_name" '
+                    type == "object"
+                    and (.id | type == "number")
+                    and .name == $name
+                    and .state == "uploaded"
+                  ' "$upload_response_file" >/dev/null; then
+                    echo "GitHub returned an invalid uploaded release asset." >&2
+                    exit 1
+                  fi
+                  query_assets "$target_release_id"
+                  ;;
+                1)
+                  download_and_compare_asset "$asset_name"
+                  ;;
+                *)
+                  echo "Draft contains duplicate assets named $asset_name." >&2
+                  exit 1
+                  ;;
+              esac
+            done
+
+            # Stage 3: Verify the complete remote name set and every remote byte.
+            verify_complete_release_assets "$target_release_id"
+
+            # Stage 4: Publish only the verified draft, without recreating assets.
+            assert_same_draft "$target_release_id"
+            verify_live_tag_target
+            gh api --method PATCH \
+              -H "Accept: application/vnd.github+json" \
+              -F draft=false \
+              "repos/${repository}/releases/${target_release_id}" \
+              >"$publish_response_file"
+            if ! jq -e --argjson expectedId "$target_release_id" '
+              type == "object"
+              and .id == $expectedId
+              and .draft == false
+            ' "$publish_response_file" >/dev/null; then
+              echo "GitHub returned an invalid published release state." >&2
+              exit 1
+            fi
+            assert_same_published "$target_release_id"
+          else
+            echo "GitHub returned an invalid release state." >&2
+            exit 1
+          fi
+          # END GUARDED DRAFT RELEASE PUBLICATION
