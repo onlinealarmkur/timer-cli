@@ -1,0 +1,38 @@
+name: timer-cli
+title: timer-cli
+version: '@VERSION@'
+summary: Clear and reliable countdown timers for the terminal
+description: |
+  timer-cli is a foreground countdown with a compact progress display,
+  natural duration input, interactive controls, looping, JSON output, and
+  English and Spanish interface text. It has no daemon, persistence, network
+  access, telemetry, or command execution.
+website:
+  - https://onlinealarmkur.com/timer/en/
+source-code:
+  - https://github.com/onlinealarmkur/timer-cli
+issues:
+  - https://github.com/onlinealarmkur/timer-cli/issues
+license: MIT AND BSD-3-Clause
+base: bare
+build-base: core26
+grade: stable
+confinement: strict
+
+platforms:
+  @ARCH@:
+    build-on: [@ARCH@]
+    build-for: [@ARCH@]
+
+apps:
+  timer-cli:
+    command: bin/timer-cli
+
+parts:
+  timer-cli:
+    plugin: dump
+    source: payload
+    organize:
+      timer-cli: bin/timer-cli
+      LICENSE: share/doc/timer-cli/LICENSE
+      THIRD_PARTY_LICENSES: share/doc/timer-cli/THIRD_PARTY_LICENSES

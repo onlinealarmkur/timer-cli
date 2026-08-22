@@ -1,0 +1,42 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      runtime-terminal-dependencies:
+        patterns:
+          - "github.com/clipperhouse/uax29/v2"
+          - "github.com/mattn/go-runewidth"
+          - "golang.org/x/sys"
+          - "golang.org/x/term"
+      pty-test-dependency:
+        patterns:
+          - "github.com/creack/pty"
+      analyzer-dependencies:
+        patterns:
+          - "github.com/BurntSushi/toml"
+          - "github.com/google/renameio"
+          - "golang.org/x/exp/typeparams"
+          - "golang.org/x/mod"
+          - "golang.org/x/sync"
+          - "golang.org/x/telemetry"
+          - "golang.org/x/tools"
+          - "golang.org/x/vuln"
+          - "honnef.co/go/tools"
+  - package-ecosystem: gomod
+    directory: "/tools/actionlint"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
