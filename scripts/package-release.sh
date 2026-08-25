@@ -91,8 +91,10 @@ if [[ ! "$source_date_epoch" =~ ^[0-9]+$ ]] || ((source_date_epoch <= 0)); then
 fi
 build_date="$("$date_bin" -u -d "@$source_date_epoch" +%Y-%m-%dT%H:%M:%SZ)" || die "source epoch could not be formatted"
 
-[[ -f LICENSE && -f README.md && -f THIRD_PARTY_LICENSES ]] ||
-	die "LICENSE, README.md, and THIRD_PARTY_LICENSES must exist at the repository root"
+[[ -f LICENSE && -f README.md ]] ||
+	die "LICENSE and README.md must exist at the repository root"
+[[ ! -e THIRD_PARTY_LICENSES && ! -L THIRD_PARTY_LICENSES ]] ||
+	die "THIRD_PARTY_LICENSES must be generated for release artifacts, not stored at the repository root"
 mkdir -p "$output_dir"
 output_abs="$(cd "$output_dir" && pwd -P)"
 [[ "$output_abs" != "$repo_root" && "$output_abs" != "/" ]] || die "output directory must not be the repository root"
@@ -114,6 +116,9 @@ umask 022
 
 temp_root="$(mktemp -d "${TMPDIR:-/tmp}/timer-cli-package.XXXXXX")"
 trap 'rm -rf "$temp_root"' EXIT INT TERM
+third_party_licenses="$temp_root/THIRD_PARTY_LICENSES"
+GO="$go_bin" bash "$script_dir/generate-third-party-licenses.sh" >"$third_party_licenses"
+chmod 0644 "$third_party_licenses"
 
 ldflags="-s -w -buildid= -X github.com/onlinealarmkur/timer-cli/internal/version.Version=$version -X github.com/onlinealarmkur/timer-cli/internal/version.Commit=$commit -X github.com/onlinealarmkur/timer-cli/internal/version.Date=$build_date"
 
@@ -125,7 +130,8 @@ for goos in darwin linux; do
 		CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" "$go_bin" build \
 			-mod=readonly -trimpath -buildvcs=false -ldflags="$ldflags" \
 			-o "$stage/timer-cli" ./cmd/timer-cli
-		cp LICENSE README.md THIRD_PARTY_LICENSES "$stage/"
+		cp LICENSE README.md "$stage/"
+		cp "$third_party_licenses" "$stage/THIRD_PARTY_LICENSES"
 		chmod 0755 "$stage/timer-cli"
 		chmod 0644 "$stage/LICENSE" "$stage/README.md" "$stage/THIRD_PARTY_LICENSES"
 		"$tar_bin" --sort=name --format=ustar --owner=0 --group=0 --numeric-owner \
@@ -149,6 +155,9 @@ while IFS= read -r -d '' path; do
 		chmod 0644 "$source_stage/$path"
 	fi
 done < <(git ls-files -z --cached)
+
+cp "$third_party_licenses" "$source_stage/THIRD_PARTY_LICENSES"
+chmod 0644 "$source_stage/THIRD_PARTY_LICENSES"
 
 rm -rf "$source_stage/vendor"
 (

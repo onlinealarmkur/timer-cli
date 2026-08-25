@@ -364,4 +364,4 @@ Online timer: <https://onlinealarmkur.com/timer/en/>
 
 ## License
 
-See [LICENSE](LICENSE) and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
+MIT. See [LICENSE](LICENSE).
