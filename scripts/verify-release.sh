@@ -61,6 +61,8 @@ fi
 
 temp_root="$(mktemp -d "${TMPDIR:-/tmp}/timer-cli-release-check.XXXXXX")"
 trap 'rm -rf "$temp_root"' EXIT INT TERM
+expected_third_party_licenses="$temp_root/THIRD_PARTY_LICENSES"
+GO="$go_bin" bash "$script_dir/generate-third-party-licenses.sh" >"$expected_third_party_licenses"
 first="$temp_root/first"
 second="$temp_root/second"
 mkdir -p "$first" "$second"
@@ -136,10 +138,12 @@ EOF
 		mkdir -p "$target_dir"
 		"$tar_bin" -xzf "$archive" -C "$target_dir"
 		target_binary="$target_dir/$name/timer-cli"
-		for reviewed_file in LICENSE README.md THIRD_PARTY_LICENSES; do
+		for reviewed_file in LICENSE README.md; do
 			cmp -s "$reviewed_file" "$target_dir/$name/$reviewed_file" ||
 				die "$reviewed_file differs from the reviewed source: $name"
 		done
+		cmp -s "$expected_third_party_licenses" "$target_dir/$name/THIRD_PARTY_LICENSES" ||
+			die "THIRD_PARTY_LICENSES differs from the generated release notices: $name"
 		build_info="$("$go_bin" version -m "$target_binary")" ||
 			die "could not read Go build metadata: $name"
 		actual_goos="$(printf '%s\n' "$build_info" | awk '$1 == "build" && $2 ~ /^GOOS=/ {sub(/^GOOS=/, "", $2); print $2}')"
@@ -187,10 +191,12 @@ done
 source_extract="$temp_root/source-extract"
 mkdir -p "$source_extract"
 "$tar_bin" -xzf "$source_archive" -C "$source_extract"
-for reviewed_file in LICENSE README.md THIRD_PARTY_LICENSES; do
+for reviewed_file in LICENSE README.md; do
 	cmp -s "$reviewed_file" "$source_extract/$source_name/$reviewed_file" ||
 		die "$reviewed_file differs from the reviewed source archive"
 done
+cmp -s "$expected_third_party_licenses" "$source_extract/$source_name/THIRD_PARTY_LICENSES" ||
+	die "source archive THIRD_PARTY_LICENSES differs from the generated release notices"
 source_binary="$temp_root/source-timer-cli"
 (
 	cd "$source_extract/$source_name"
@@ -254,10 +260,10 @@ for snap_arch in amd64 arm64; do
 	cmp -s "$snap_project/payload/timer-cli" \
 		"$targets_root/timer-cli_${version}_linux_${snap_arch}/timer-cli_${version}_linux_${snap_arch}/timer-cli" ||
 		die "Snapcraft payload does not match the verified Linux binary for $snap_arch"
-	for reviewed_file in LICENSE THIRD_PARTY_LICENSES; do
-		cmp -s "$reviewed_file" "$snap_project/payload/$reviewed_file" ||
-			die "Snapcraft $reviewed_file does not match the reviewed source for $snap_arch"
-	done
+	cmp -s LICENSE "$snap_project/payload/LICENSE" ||
+		die "Snapcraft LICENSE does not match the reviewed source for $snap_arch"
+	cmp -s "$expected_third_party_licenses" "$snap_project/payload/THIRD_PARTY_LICENSES" ||
+		die "Snapcraft THIRD_PARTY_LICENSES differs from the generated release notices for $snap_arch"
 done
 
 if [[ -n "$export_abs" ]]; then

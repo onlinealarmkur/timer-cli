@@ -1660,6 +1660,7 @@ expect_failure "valid release Go version file" "required tool not found: $TAR_BI
 package_integrity_fixture="$temp_root/package-integrity-fixture"
 mkdir -p "$package_integrity_fixture"
 while IFS= read -r -d '' path; do
+	[[ -e "$repo_root/$path" || -L "$repo_root/$path" ]] || continue
 	mkdir -p "$package_integrity_fixture/$(dirname "$path")"
 	cp -p "$repo_root/$path" "$package_integrity_fixture/$path"
 done < <(git -C "$repo_root" ls-files -z --cached)

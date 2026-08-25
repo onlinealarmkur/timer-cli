@@ -53,14 +53,22 @@ module-tidy-check:
 	$(GO) mod tidy -diff
 
 license-check:
-	@expected="$$(mktemp)"; \
-		trap 'rm -f "$$expected"' EXIT INT TERM; \
-		GO="$(GO)" bash scripts/generate-third-party-licenses.sh >"$$expected"; \
-		diff -u THIRD_PARTY_LICENSES "$$expected"; \
-		echo "Third-party license notices match linked release dependencies"
+	@notice="$$(mktemp)"; \
+		trap 'rm -f "$$notice"' EXIT INT TERM; \
+		{ test ! -e THIRD_PARTY_LICENSES && test ! -L THIRD_PARTY_LICENSES; } || { \
+			echo "THIRD_PARTY_LICENSES is generated for release artifacts and must not exist at the repository root"; \
+			exit 1; \
+		}; \
+		GO="$(GO)" bash scripts/generate-third-party-licenses.sh >"$$notice"; \
+		test -s "$$notice"; \
+		grep -Fqx 'timer-cli third-party software notices' "$$notice"; \
+		grep -Fq 'Component: Go runtime and standard library ' "$$notice"; \
+		echo "Third-party license notices generate from linked release dependencies"
 
 licenses:
-	GO="$(GO)" bash scripts/generate-third-party-licenses.sh >THIRD_PARTY_LICENSES
+	mkdir -p dist
+	GO="$(GO)" bash scripts/generate-third-party-licenses.sh >dist/THIRD_PARTY_LICENSES
+	@echo "Third-party license notices written to dist/THIRD_PARTY_LICENSES"
 
 shellcheck-require:
 	@command -v "$(SHELLCHECK)" >/dev/null 2>&1 || { \

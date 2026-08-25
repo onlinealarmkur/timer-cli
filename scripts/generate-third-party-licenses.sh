@@ -76,11 +76,11 @@ timer-cli third-party software notices
 ======================================
 
 This file contains license notices for software included in timer-cli release
-binaries. The timer-cli project license is provided separately in LICENSE.
+distributions. The timer-cli project license is provided separately in LICENSE.
 
 EOF
 
-append_component_notices "Go toolchain and standard library $release_go_version" "https://go.dev/" "$goroot"
+append_component_notices "Go runtime and standard library $release_go_version" "https://go.dev/" "$goroot"
 
 while IFS='|' read -r module version module_dir; do
 	[[ -n "$module" && -n "$version" && -n "$module_dir" ]] || die "invalid Go module metadata"
