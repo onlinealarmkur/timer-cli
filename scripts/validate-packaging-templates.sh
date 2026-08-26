@@ -33,6 +33,7 @@ exact_line() {
 
 expected_url='https://github.com/onlinealarmkur/timer-cli/releases/download/v@VERSION@/timer-cli_@VERSION@_source.tar.gz'
 expected_aur_pkgbuild_url='https://github.com/onlinealarmkur/timer-cli/releases/download/v${pkgver}/timer-cli_${pkgver}_source.tar.gz'
+expected_homepage='https://onlinealarmkur.com/timer/en/'
 [[ "$(sed -n '1p' "$homebrew")" == 'class TimerCli < Formula' ]] ||
 	die "Homebrew template must begin with the formula class declaration"
 exact_line "$homebrew" 'class TimerCli < Formula' "Homebrew template must define TimerCli exactly once"
@@ -54,6 +55,7 @@ exact_line "$aur_pkgbuild" 'pkgname=timer-cli' "AUR PKGBUILD template must use t
 exact_line "$aur_pkgbuild" '# Maintainer: Burak Ozdemir' \
 	"AUR PKGBUILD template must contain the maintainer attribution exactly once"
 exact_line "$aur_pkgbuild" 'pkgver=@VERSION@' "AUR PKGBUILD template must use the generated version"
+exact_line "$aur_pkgbuild" "url='$expected_homepage'" "AUR PKGBUILD template must use the product homepage"
 exact_line "$aur_pkgbuild" "source=(\"\${pkgname}-\${pkgver}.tar.gz::$expected_aur_pkgbuild_url\")" \
 	"AUR PKGBUILD template must use the exact generated source archive URL"
 exact_line "$aur_pkgbuild" "sha256sums=('@SOURCE_SHA256@')" "AUR PKGBUILD template must use the generated source checksum"
@@ -67,6 +69,7 @@ exact_line "$aur_pkgbuild" '  install -Dm644 THIRD_PARTY_LICENSES "${pkgdir}/usr
 
 exact_line "$aur_srcinfo" 'pkgbase = timer-cli' "AUR .SRCINFO template must use the timer-cli package base"
 exact_line "$aur_srcinfo" $'\tpkgver = @VERSION@' "AUR .SRCINFO template must use the generated version"
+exact_line "$aur_srcinfo" $'\turl = '"$expected_homepage" "AUR .SRCINFO template must use the product homepage"
 exact_line "$aur_srcinfo" $'\tsha256sums = @SOURCE_SHA256@' "AUR .SRCINFO template must use the generated source checksum"
 exact_line "$aur_srcinfo" $'\tlicense = MIT AND BSD-3-Clause' \
 	"AUR .SRCINFO must declare the combined runtime licenses"
