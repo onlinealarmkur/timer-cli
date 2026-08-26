@@ -1,7 +1,7 @@
 # timer-cli: Terminal countdown timer
 
-Start a countdown and keep its end time, remaining time, and progress in view
-until it finishes.
+Run a countdown in the terminal and see when it ends, how much time remains,
+and how far along it is.
 
 ![timer-cli demo showing a five-second Focus Session countdown](demo/timer-cli.gif)
 
@@ -19,7 +19,7 @@ timer-cli 25m --loop
 timer-cli 30s --json
 ```
 
-Run `timer-cli --help` for the built-in reference.
+Run `timer-cli --help` to see the full command reference.
 
 ### Options
 
@@ -67,9 +67,9 @@ to clean up or redraw their live frames.
 The parser accepts three forms:
 
 - Ordered whole-number units: `h`, then `m`, then `s`, such as `1h 30m`.
-- Whole-number unit words in the languages below. Words are case-insensitive.
-  You may use the listed conjunction, but units must stay in `h`, `m`, `s`
-  order. Multi-word durations do not need shell quotes.
+- Whole-number unit words in any language listed below. Words are
+  case-insensitive, and the listed conjunction is optional. Units must remain
+  in `h`, `m`, `s` order. Multi-word durations do not need shell quotes.
 - Colon notation: exactly `MM:SS` or `HH:MM:SS`. `MM:SS` fields are two
   digits. `HH:MM:SS` hours use two or three digits; minutes and seconds are
   `00`-`59`.
@@ -93,16 +93,15 @@ code 2.
 Prebuilt `timer-cli` release archives are available for macOS and Linux on
 `amd64` and `arm64`. Native Windows is not supported.
 
-Install with a platform package manager:
+Install with Homebrew on macOS or Linux:
 
 ```sh
-# macOS or Linux through the Online Alarm Kur Homebrew tap
 brew install onlinealarmkur/tools/timer-cli
+```
 
-# Arch Linux through the AUR using the optional yay helper
-yay -S timer-cli
+On Linux distributions with snapd:
 
-# Linux distributions with snapd
+```sh
 sudo snap install timer-cli
 ```
 
@@ -169,14 +168,13 @@ command -v timer-cli
 timer-cli version
 ```
 
-To keep the `PATH` setting for future sessions, add the export to your shell
-configuration yourself. After installation, see
-[Shell completion](#shell-completion).
+To make this `PATH` change permanent, add the export to your shell
+configuration. After installation, see [Shell completion](#shell-completion).
 
 ## Shell completion
 
-Completion generation writes a script to stdout; it does not edit shell
-profiles or install files. Activate it for the current shell session with:
+The completion command prints a script to stdout and does not edit your shell
+profile or install files. To activate it for the current session:
 
 ```sh
 # Bash
@@ -220,9 +218,9 @@ Duration vocabulary and interface language are independent:
 output. This prevents words shared by several languages from changing the
 interface language.
 
-Interactive text, help, validation errors, completion descriptions, and default
-completion or cancellation messages follow the selected language. User-provided
-titles and `--message` values are not translated.
+Interface text, help, validation errors, shell-completion descriptions, and
+default completion and cancellation messages follow the selected language.
+User-provided titles and `--message` values are not translated.
 
 Terminal output replaces invalid UTF-8 and removes unsafe control and
 bidirectional-formatting characters. JSON retains valid UTF-8 input with
@@ -307,10 +305,10 @@ is delivered once per completed cycle, and tests use an injected clock.
 
 ## Scope and privacy
 
-`timer-cli` runs one foreground countdown and saves no history or
-configuration. It does not schedule wall-clock alarms or dates. There is no
-daemon, Pomodoro tracking, account, telemetry, cloud synchronization, or
-network access. It does not download sounds, execute commands, or send desktop
+`timer-cli` runs one countdown in the foreground and does not save history or
+configuration. It does not schedule alarms for dates or clock times, and it
+has no daemon, Pomodoro tracking, accounts, telemetry, cloud sync, or network
+access. It does not download sounds, run commands, or send desktop
 notifications.
 
 Titles and completion messages live only in process memory and terminal
@@ -330,7 +328,7 @@ make build
 make coverage
 ```
 
-`make all` is the complete local gate. It runs:
+`make all` runs the full local check:
 
 - Formatting, module graph, tidy-diff, and license checks.
 - The module-pinned `govulncheck`, vet, staticcheck, ShellCheck, and workflow
@@ -352,15 +350,17 @@ jobs rather than a default macOS environment.
 `make coverage` writes the ignored `coverage.out` profile and prints coverage
 for each function.
 
-For each release tag, the workflow also generates the Homebrew formula, AUR
-submission bundle, vendored source archive, and native `amd64` and `arm64`
-snaps. Homebrew and AUR use the version and SHA-256 value of the same verified
-source archive. Each snap contains the tested Linux binary for its architecture.
-A maintainer publishes these files to the Homebrew tap, AUR, and Snap Store.
+For each release tag, the workflow generates a Homebrew formula, an AUR
+submission bundle, a vendored source archive, and native `amd64` and `arm64`
+snaps. Homebrew and AUR use the version and SHA-256 checksum from the same
+verified source archive, and each snap contains the tested Linux binary for
+its architecture. Publishing to the Homebrew tap, AUR, and Snap Store is a
+separate maintainer step.
 
-## Website
+## Online timer
 
-Online timer: <https://onlinealarmkur.com/timer/en/>
+Use the [Online Alarm Kur timer](https://onlinealarmkur.com/timer/en/) in a web
+browser.
 
 ## License
 
