@@ -9,7 +9,9 @@ Set Padding 24
 Set TypingSpeed 15ms
 Set CursorBlink false
 
-Type "./bin/timer-cli 5s --title 'Focus Session' --no-bell"
+Require timer-cli
+
+Type "timer-cli 5s --title 'Focus Session' --no-bell"
 Enter
 Sleep 7s
 Hide
