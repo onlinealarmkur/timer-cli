@@ -17,6 +17,7 @@ import (
 	"github.com/onlinealarmkur/timer-cli/internal/keyboard"
 	"github.com/onlinealarmkur/timer-cli/internal/localize"
 	"github.com/onlinealarmkur/timer-cli/internal/runner"
+	"github.com/onlinealarmkur/timer-cli/internal/version"
 )
 
 type failingWriter struct{ err error }
@@ -200,7 +201,7 @@ func TestVersionExitCode(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	code := Run(context.Background(), []string{"version"}, os.Stdin, &stdout, &stderr)
-	if code != exitOK || stdout.String() != "timer-cli 1.0.0\n" || strings.Contains(stdout.String(), "unknown") || stderr.Len() != 0 {
+	if code != exitOK || stdout.String() != "timer-cli "+version.Version+"\n" || strings.Contains(stdout.String(), "unknown") || stderr.Len() != 0 {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
@@ -723,32 +724,21 @@ func TestTerminalDisplayCapability(t *testing.T) {
 	}
 }
 
-func TestSameTerminalDevice(t *testing.T) {
+func TestTerminalNeedsCRLFRejectsNonTerminals(t *testing.T) {
 	t.Parallel()
-	first, err := os.CreateTemp(t.TempDir(), "terminal-device-first")
+	file, err := os.CreateTemp(t.TempDir(), "not-a-terminal")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = first.Close() })
-	same, err := os.Open(first.Name())
-	if err != nil {
+	t.Cleanup(func() { _ = file.Close() })
+	if terminalNeedsCRLF(nil) || terminalNeedsCRLF(file) {
+		t.Fatal("a non-terminal requires terminal line endings")
+	}
+	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = same.Close() })
-	second, err := os.CreateTemp(t.TempDir(), "terminal-device-second")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = second.Close() })
-
-	if !sameTerminalDevice(first, same) {
-		t.Fatal("two handles for the same device were not recognized")
-	}
-	if sameTerminalDevice(first, second) {
-		t.Fatal("different devices were recognized as the same device")
-	}
-	if sameTerminalDevice(nil, first) || sameTerminalDevice(first, nil) {
-		t.Fatal("a nil file was recognized as the same device")
+	if terminalNeedsCRLF(file) {
+		t.Fatal("a closed file requires terminal line endings")
 	}
 }
 

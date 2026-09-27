@@ -239,7 +239,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     container:
-      image: archlinux:base-devel-20260809.0.570793@sha256:49facfaf7eac45ed51ea3056091b8478191df5bcd62225e457e89c246b7cbda3
+      image: archlinux:base-devel-20260920.0.596911@sha256:8745817f349ed24373341ddb92776209eeec3f0364ea48f7f645ac5800d30a50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

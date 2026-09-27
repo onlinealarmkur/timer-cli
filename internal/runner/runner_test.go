@@ -513,9 +513,72 @@ func TestCompletionPreemptionRechecksContextAtCommitPoint(t *testing.T) {
 	t.Parallel()
 	clock := &runnerClock{now: time.Date(2026, 1, 2, 10, 11, 12, 0, time.UTC)}
 	opts := Options{Countdown: countdown.New(clock, time.Minute)}
-	preempted, err := preemptCompletion(&stagedCancelContext{}, &opts)
-	if err != nil || !preempted {
-		t.Fatalf("preemptCompletion = %v, %v; want true, nil", preempted, err)
+	preempted, restarted, err := preemptCompletion(&stagedCancelContext{}, &opts)
+	if err != nil || !preempted || restarted {
+		t.Fatalf("preemptCompletion = %v, %v, %v; want true, false, nil", preempted, restarted, err)
+	}
+}
+
+func TestRestartExpiringAtCompletionBoundaryUsesFreshSnapshot(t *testing.T) {
+	t.Parallel()
+	for _, afterRender := range []bool{false, true} {
+		for _, suspend := range []bool{false, true} {
+			name := "subtract"
+			if suspend {
+				name = "suspend"
+			}
+			if afterRender {
+				name += " after render"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				startedAt := time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC)
+				clock := &runnerClock{now: startedAt}
+				timer := countdown.New(clock, 30*time.Second)
+				clock.now = startedAt.Add(time.Minute)
+				actions := make(chan keyboard.Action, 2)
+				queue := func() {
+					actions <- keyboard.ActionRestart
+					if suspend {
+						actions <- keyboard.ActionSuspend
+					} else {
+						actions <- keyboard.ActionSubtractMinute
+					}
+				}
+				renderer := &fakeRenderer{}
+				if afterRender {
+					renderer.onRender = func() {
+						if renderer.renders == 1 {
+							queue()
+						}
+					}
+				} else {
+					queue()
+				}
+				alert := &fakeAlert{}
+				status, err := Run(context.Background(), Options{
+					Countdown: timer, Renderer: renderer, Alert: alert, Actions: actions,
+					Suspend: func() error { clock.now = clock.now.Add(time.Minute); return nil },
+				})
+				if err != nil || status != Completed || renderer.finishes != 1 || alert.rings != 1 {
+					t.Fatalf("Run=%s, %v renderer=%+v alert=%+v", status, err, renderer, alert)
+				}
+				wantTotal := time.Duration(0)
+				wantTarget := startedAt.Add(time.Minute)
+				if suspend {
+					wantTotal = 30 * time.Second
+					wantTarget = wantTarget.Add(wantTotal)
+				}
+				got := renderer.finishSnapshot
+				if got.Total != wantTotal || got.Elapsed != wantTotal || got.Remaining != 0 ||
+					!got.Finished || !got.Target.Equal(wantTarget) || !got.ObservedAt.Equal(clock.now) {
+					t.Fatalf("completion used a stale cycle: got %+v; want total=%v target=%v observed=%v", got, wantTotal, wantTarget, clock.now)
+				}
+				if _, completedAgain := timer.Tick(); completedAgain {
+					t.Fatal("restarted cycle completion was not consumed")
+				}
+			})
+		}
 	}
 }
 
@@ -541,9 +604,9 @@ func TestCompletionPreemptionUsesBoundedActionSnapshot(t *testing.T) {
 		},
 	}
 
-	preempted, err := preemptCompletion(ctx, &opts)
-	if err != nil || preempted {
-		t.Fatalf("preemptCompletion = %v, %v; want false, nil", preempted, err)
+	preempted, restarted, err := preemptCompletion(ctx, &opts)
+	if err != nil || preempted || restarted {
+		t.Fatalf("preemptCompletion = %v, %v, %v; want false, false, nil", preempted, restarted, err)
 	}
 	if suspendCalls != 1 {
 		t.Fatalf("suspend calls = %d, want 1", suspendCalls)
@@ -836,9 +899,9 @@ func TestPreemptCompletionHandlesAlreadyCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	preempted, err := preemptCompletion(ctx, &Options{})
-	if err != nil || !preempted {
-		t.Fatalf("preemptCompletion = %v, %v; want true, nil", preempted, err)
+	preempted, restarted, err := preemptCompletion(ctx, &Options{})
+	if err != nil || !preempted || restarted {
+		t.Fatalf("preemptCompletion = %v, %v, %v; want true, false, nil", preempted, restarted, err)
 	}
 }
 
@@ -945,18 +1008,38 @@ func TestNextWakeDelay(t *testing.T) {
 	}
 }
 
-func TestAdaptiveWakeSchedulingMatchesRedirectedRecords(t *testing.T) {
+func TestRedirectedWakeDelayPreservesFractionalBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, remaining := range []time.Duration{
+		time.Nanosecond, 250 * time.Millisecond,
+		10*time.Minute + 250*time.Millisecond,
+		25 * time.Hour,
+	} {
+		snapshot := countdown.Snapshot{Total: 25 * time.Hour, Remaining: remaining}
+		want := 250 * time.Millisecond
+		if remaining == time.Nanosecond {
+			want = time.Nanosecond
+		} else if remaining == 25*time.Hour {
+			want = time.Second
+		}
+		if got := nextWakeDelay(snapshot, time.Second, true); got != want {
+			t.Errorf("remaining=%v: delay=%v, want %v", remaining, got, want)
+		}
+	}
+}
+
+func TestBoundedWakeSchedulingPreservesRedirectedRecords(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
 		total   time.Duration
 		cadence time.Duration
-		wakes   int
+		records int
 	}{
-		{name: "59 minutes", total: 59 * time.Minute, cadence: time.Second, wakes: 3540},
-		{name: "one hour", total: time.Hour, cadence: time.Second, wakes: 3600},
-		{name: "24 hours", total: 24 * time.Hour, cadence: time.Minute, wakes: 1440},
-		{name: "30 days", total: 30 * 24 * time.Hour, cadence: 10 * time.Minute, wakes: 4320},
+		{name: "59 minutes", total: 59 * time.Minute, cadence: time.Second, records: 3541},
+		{name: "one hour", total: time.Hour, cadence: time.Second, records: 3601},
+		{name: "24 hours", total: 24 * time.Hour, cadence: time.Minute, records: 1441},
+		{name: "30 days", total: 30 * 24 * time.Hour, cadence: 10 * time.Minute, records: 4321},
 	}
 	for _, test := range tests {
 		test := test
@@ -979,19 +1062,19 @@ func TestAdaptiveWakeSchedulingMatchesRedirectedRecords(t *testing.T) {
 					break
 				}
 				delay := nextWakeDelay(snapshot, time.Second, true)
-				if delay <= 0 || delay > remaining {
+				if delay <= 0 || delay > time.Second || delay > remaining {
 					t.Fatalf("invalid delay %v at remaining %v", delay, remaining)
 				}
 				remaining -= delay
 				wakes++
 			}
 
-			if wakes != test.wakes {
-				t.Fatalf("wakes = %d, want %d", wakes, test.wakes)
+			if want := int(test.total / time.Second); wakes != want {
+				t.Fatalf("wakes = %d, want %d", wakes, want)
 			}
 			records := strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n")
-			if len(records) != test.wakes+1 {
-				t.Fatalf("records = %d, want %d", len(records), test.wakes+1)
+			if len(records) != test.records {
+				t.Fatalf("records = %d, want %d", len(records), test.records)
 			}
 			for index, record := range records {
 				wantRemaining := test.total - time.Duration(index)*test.cadence
@@ -1004,6 +1087,34 @@ func TestAdaptiveWakeSchedulingMatchesRedirectedRecords(t *testing.T) {
 				t.Fatalf("completion record = %q", records[len(records)-1])
 			}
 		})
+	}
+}
+
+func TestRedirectedTimerRechecksWallClockAfterLongJump(t *testing.T) {
+	t.Parallel()
+	startedAt := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	clock := &runnerClock{now: startedAt}
+	total := 25 * time.Hour
+	renderer := &fakeRenderer{}
+	renderer.onRender = func() {
+		if renderer.renders == 1 {
+			// The snapshot used to choose the next wait still has 25 hours
+			// remaining. Advance wall time without waking the runner ourselves.
+			clock.now = startedAt.Add(total + time.Hour)
+		}
+	}
+	alert := &fakeAlert{}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	status, err := Run(ctx, Options{
+		Countdown: countdown.New(clock, total), Renderer: renderer, Alert: alert,
+		Interval: time.Second, RecordCadence: true,
+	})
+	if err != nil || status != Completed {
+		t.Fatalf("Run after wall-clock jump = %s, %v", status, err)
+	}
+	if renderer.finishes != 1 || alert.rings != 1 || !renderer.finishSnapshot.Finished {
+		t.Fatalf("renderer=%+v alert=%+v", renderer, alert)
 	}
 }
 

@@ -182,9 +182,9 @@ func Run(ctx context.Context, opts Options) (status Status, runErr error) {
 // queued restart begins a fresh timer without completing the expired cycle;
 // queued pause, add, and subtract are no-ops on a finished countdown and are
 // discarded.
-func preemptCompletion(ctx context.Context, opts *Options) (bool, error) {
+func preemptCompletion(ctx context.Context, opts *Options) (preempted, restarted bool, err error) {
 	if ctx.Err() != nil {
-		return true, nil
+		return true, restarted, nil
 	}
 
 	type completionEvent struct {
@@ -229,7 +229,7 @@ func preemptCompletion(ctx context.Context, opts *Options) (bool, error) {
 capture:
 	for inputBudget > 0 || actionBudget > 0 || suspendBudget > 0 {
 		if ctx.Err() != nil {
-			return true, nil
+			return true, restarted, nil
 		}
 		inputErrors := opts.InputErrors
 		if inputBudget == 0 {
@@ -245,7 +245,7 @@ capture:
 		}
 		select {
 		case <-ctx.Done():
-			return true, nil
+			return true, restarted, nil
 		case inputErr, ok := <-inputErrors:
 			inputBudget--
 			if !ok {
@@ -277,31 +277,34 @@ capture:
 
 	for _, event := range events {
 		if ctx.Err() != nil {
-			return true, nil
+			return true, restarted, nil
 		}
 		switch event.kind {
 		case completionInputError:
 			if event.inputErr != nil {
-				return false, fmt.Errorf("keyboard input failed: %w", event.inputErr)
+				return false, restarted, fmt.Errorf("keyboard input failed: %w", event.inputErr)
 			}
 		case completionAction:
 			quit, actionErr := handleAction(opts, event.action)
 			if actionErr != nil {
-				return false, actionErr
+				return false, restarted, actionErr
+			}
+			if event.action == keyboard.ActionRestart {
+				restarted = true
 			}
 			if quit {
-				return true, nil
+				return true, restarted, nil
 			}
 		case completionSuspend:
 			if err := suspend(opts); err != nil {
-				return false, err
+				return false, restarted, err
 			}
 		}
 	}
 	if ctx.Err() != nil {
-		return true, nil
+		return true, restarted, nil
 	}
-	return false, nil
+	return false, restarted, nil
 }
 
 // resolveCompletionPreemption drains queued input at a completion boundary.
@@ -309,7 +312,7 @@ capture:
 // otherwise restart reports a queued restart that began a fresh cycle before
 // the expired one was reported.
 func resolveCompletionPreemption(ctx context.Context, opts *Options, message string) (result Status, terminate, restart bool, err error) {
-	preempted, preemptErr := preemptCompletion(ctx, opts)
+	preempted, restarted, preemptErr := preemptCompletion(ctx, opts)
 	if preemptErr != nil {
 		return Canceled, true, false, preemptErr
 	}
@@ -317,7 +320,9 @@ func resolveCompletionPreemption(ctx context.Context, opts *Options, message str
 		result, err = finishCanceled(*opts, message)
 		return result, true, false, err
 	}
-	return "", false, opts.Countdown.Snapshot().Remaining > 0, nil
+	// A fresh cycle may already be at zero (subtract or sleep after restart).
+	// Re-tick it even then, instead of committing the expired cycle's snapshot.
+	return "", false, restarted, nil
 }
 
 // applyAction applies one interactive control. It reports whether the action
@@ -376,7 +381,10 @@ func nextWakeDelay(snapshot countdown.Snapshot, interval time.Duration, recordCa
 		interval = 250 * time.Millisecond
 	}
 	if recordCadence {
-		return recordcadence.NextBoundary(snapshot.Total, snapshot.Remaining)
+		// Record emission can be sparse, but expiry follows wall time. Go's
+		// timers use monotonic time, which may stop during system sleep, so
+		// recheck the wall-clock target at least once per second after wake.
+		return min(time.Second, recordcadence.NextBoundary(snapshot.Total, snapshot.Remaining))
 	}
 	if interval >= time.Second {
 		return min(time.Second, snapshot.Remaining)

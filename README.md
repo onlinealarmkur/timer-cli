@@ -108,7 +108,7 @@ sudo snap install timer-cli
 Or install the exact release from source with Go 1.26 or newer:
 
 ```sh
-go install github.com/onlinealarmkur/timer-cli/cmd/timer-cli@v1.0.0
+go install github.com/onlinealarmkur/timer-cli/cmd/timer-cli@v1.1.0
 ```
 
 ### Manual install
@@ -119,7 +119,7 @@ Linux. Intel/x86-64 is `amd64`, while Apple Silicon/AArch64 is `arm64`.
 Download the matching archive and manifest from the same release:
 
 ```sh
-VERSION=1.0.0
+VERSION=1.1.0
 TARGET=darwin_arm64
 ARCHIVE="timer-cli_${VERSION}_${TARGET}.tar.gz"
 RELEASE_URL="https://github.com/onlinealarmkur/timer-cli/releases/download/v${VERSION}"
@@ -260,9 +260,10 @@ cadence:
 
 In regular redirected output, the first record, the zero-remaining completion
 record, and paused or running transitions are always written. Duplicate
-snapshots within the same interval are suppressed. The timer waits until the
-next record boundary or completion without delaying cancellation or keyboard
-input. Rounded-up records never show zero before completion.
+snapshots within the same interval are suppressed. The timer checks its
+wall-clock deadline at least once per second, even between records, so it can
+finish promptly after sleep or a forward clock adjustment. Rounded-up records
+never show zero before completion.
 
 ### Looping
 
@@ -333,7 +334,7 @@ make coverage
 - Formatting, module graph, tidy-diff, and license checks.
 - The module-pinned `govulncheck`, vet, staticcheck, ShellCheck, and workflow
   linting.
-- Release-guard tests, regular tests, race tests, and the 95% aggregate
+- Makefile and release-guard tests, regular tests, race tests, and the 95% aggregate
   coverage check.
 - A local build.
 
@@ -364,4 +365,13 @@ browser.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+The source code uses the [MIT License](LICENSE). Created by
+[Online Alarm Kur](https://onlinealarmkur.com/en/), which offers an online
+alarm clock, timer, stopwatch, countdown, and more.
+
+## Trademarks and brand assets
+
+The MIT License applies to the source code only. The Online Alarm Kur name,
+logos, icons, and other brand assets are not covered by it and remain
+reserved. The Online Alarm Kur name, logo, and icon artwork are reserved brand
+assets and are not licensed for use with another product or service.

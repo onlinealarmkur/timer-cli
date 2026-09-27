@@ -28,6 +28,8 @@ fi
 cd "$repo_root"
 export LC_ALL=C
 export TZ=UTC
+# Release binaries and vendored source must use the same declared module graph.
+export GOWORK=off
 
 go_bin="${GO:-go}"
 tar_bin="${TAR_BIN:-tar}"

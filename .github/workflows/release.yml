@@ -76,7 +76,7 @@ jobs:
           path: dist/*
           if-no-files-found: error
           overwrite: true
-          retention-days: 1
+          retention-days: 90
 
   snap:
     needs: verify
@@ -85,6 +85,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -102,37 +103,95 @@ jobs:
         with:
           name: timer-cli-base-${{ github.ref_name }}-${{ github.run_id }}
           path: dist
+      - name: Find previously tested snap for this run
+        id: existing-snap
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SNAP_ARTIFACT_NAME: timer-cli-snap-${{ matrix.arch }}-${{ github.ref_name }}-${{ github.run_id }}
+        run: |
+          # BEGIN SNAP ARTIFACT REUSE
+          set -euo pipefail
+          response="$(mktemp)"
+          trap 'rm -f "$response"' EXIT
+          gh api --paginate --slurp \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" \
+            >"$response"
+          matches="$(jq -ce --arg name "$SNAP_ARTIFACT_NAME" '
+            if type != "array" or length == 0 or any(.[]; (.artifacts | type) != "array")
+            then error("Invalid artifact response")
+            else [.[].artifacts[] | select(.name == $name)] end
+          ' "$response")"
+          count="$(jq 'length' <<<"$matches")"
+          case "$count" in
+            0) echo "artifact-id=" >>"$GITHUB_OUTPUT" ;;
+            1)
+              if ! jq -e --arg sha "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" '
+                .[0] | .expired == false and (.size_in_bytes | type == "number" and . > 0)
+                and (.id | type == "number" and . > 0 and floor == .)
+                and (.workflow_run.id | tostring) == $run
+                and .workflow_run.head_sha == $sha
+              ' <<<"$matches" >/dev/null; then
+                echo "Existing Snap artifact is expired or does not match this run; refusing to rebuild it." >&2
+                exit 1
+              fi
+              printf 'artifact-id=%s\n' "$(jq -r '.[0].id' <<<"$matches")" >>"$GITHUB_OUTPUT"
+              ;;
+            *) echo "Duplicate Snap artifacts for this run." >&2; exit 1 ;;
+          esac
+          # END SNAP ARTIFACT REUSE
+      - name: Restore previously tested snap
+        if: steps.existing-snap.outputs.artifact-id != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.existing-snap.outputs.artifact-id }}
+          path: dist-snap
       - name: Prepare native Snapcraft project
+        if: steps.existing-snap.outputs.artifact-id == ''
         shell: bash
         run: bash scripts/prepare-snap.sh "${GITHUB_REF_NAME#v}" "${{ matrix.arch }}" dist "build/snap-${{ matrix.arch }}"
       - name: Build native snap
+        if: steps.existing-snap.outputs.artifact-id == ''
         id: snapcraft
         uses: snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1
         with:
           path: build/snap-${{ matrix.arch }}
-      - name: Install and exercise snap
+      - name: Stage newly built snap
+        if: steps.existing-snap.outputs.artifact-id == ''
         shell: bash
         env:
           SNAP_PATH: ${{ steps.snapcraft.outputs.snap }}
+          SNAP_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist-snap
+          cp -- "$SNAP_PATH" "dist-snap/timer-cli_${GITHUB_REF_NAME#v}_${SNAP_ARCH}.snap"
+      - name: Install and exercise snap
+        shell: bash
+        env:
+          SNAP_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
+          SNAP_PATH="dist-snap/timer-cli_${version}_${SNAP_ARCH}.snap"
+          test -f "$SNAP_PATH" && test ! -L "$SNAP_PATH"
+          test "$(find dist-snap -mindepth 1 -maxdepth 1 | wc -l)" -eq 1
           sudo snap install --dangerous "$SNAP_PATH"
           test "$(snap run timer-cli version)" = "timer-cli $version (commit $(git rev-parse --short=12 HEAD), built $(date -u -d "@$(git log -1 --format=%ct)" +%Y-%m-%dT%H:%M:%SZ))"
           test "$(snap run timer-cli 1 segundo --lang es --final-only --no-bell)" = "¡Se acabó el tiempo!"
           test -f /snap/timer-cli/current/share/doc/timer-cli/LICENSE
           test -f /snap/timer-cli/current/share/doc/timer-cli/THIRD_PARTY_LICENSES
           sudo snap remove timer-cli
-          mkdir -p dist-snap
-          cp -- "$SNAP_PATH" "dist-snap/timer-cli_${version}_${{ matrix.arch }}.snap"
       - name: Transfer tested native snap
+        if: steps.existing-snap.outputs.artifact-id == ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: timer-cli-snap-${{ matrix.arch }}-${{ github.ref_name }}-${{ github.run_id }}
           path: dist-snap/*.snap
           if-no-files-found: error
-          overwrite: true
-          retention-days: 1
+          overwrite: false
+          retention-days: 90
 
   assemble:
     needs:
@@ -194,7 +253,7 @@ jobs:
           path: dist/*
           if-no-files-found: error
           overwrite: true
-          retention-days: 1
+          retention-days: 90
 
   attest:
     needs: assemble

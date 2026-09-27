@@ -148,7 +148,7 @@ _timer_cli_conflicts() {
 %[12]s  esac
 }
 
-_timer_cli() {
+_timer_cli_candidates() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   local duration_seen=0
   local expect_value=0
@@ -162,6 +162,41 @@ _timer_cli() {
   local -a seen_options=() option_candidates=()
   COMPREPLY=()
 
+  # Resolve consumed values before recognizing global options: --lang can
+  # itself be literal title/message text, just as in the command parser.
+  for ((i = 1; i < COMP_CWORD; i++)); do
+    word="${COMP_WORDS[i]}"
+    if (( expect_value )); then
+      expect_value=0
+      continue
+    fi
+    canonical="$(_timer_cli_canonical_option "${word%%=*}")"
+    if [[ -n "$canonical" ]]; then
+      seen_options+=("$canonical")
+    fi
+    if _timer_cli_takes_value "$word"; then
+      expect_value=1
+      if [[ "$word" != --lang ]]; then
+        command_eligible=0
+      fi
+      continue
+    fi
+    case "$word" in
+      --help|-h|--version) terminal_seen=1 ;;
+      --lang=*) ;;
+      %[7]s) command_eligible=0 ;;
+      --*|-*) command_eligible=0 ;;
+      *) duration_seen=1; command_eligible=0 ;;
+    esac
+  done
+
+  if (( expect_value )); then
+    if [[ "${COMP_WORDS[COMP_CWORD-1]}" == --lang ]]; then
+      COMPREPLY=( $(compgen -W "%[10]s" -- "$cur") )
+    fi
+    return
+  fi
+
   case "$cur" in
     --lang=*)
       local lang_value="${cur#--lang=}"
@@ -169,11 +204,6 @@ _timer_cli() {
       COMPREPLY=( "${COMPREPLY[@]/#/--lang=}" )
       return ;;
   esac
-  if [[ "$COMP_CWORD" -gt 0 && "${COMP_WORDS[COMP_CWORD-1]}" == --lang ]]; then
-    COMPREPLY=( $(compgen -W "%[10]s" -- "$cur") )
-    return
-  fi
-
   case "$cur" in
     %[7]s) return ;;
   esac
@@ -230,35 +260,6 @@ _timer_cli() {
     return
   fi
 
-  for ((i = 1; i < COMP_CWORD; i++)); do
-    word="${COMP_WORDS[i]}"
-    if (( expect_value )); then
-      expect_value=0
-      continue
-    fi
-    canonical="$(_timer_cli_canonical_option "${word%%=*}")"
-    if [[ -n "$canonical" ]]; then
-      seen_options+=("$canonical")
-    fi
-    if _timer_cli_takes_value "$word"; then
-      expect_value=1
-      if [[ "$word" != --lang ]]; then
-        command_eligible=0
-      fi
-      continue
-    fi
-    case "$word" in
-      --help|-h|--version) terminal_seen=1 ;;
-      --lang=*) ;;
-      %[7]s) command_eligible=0 ;;
-      --*|-*) command_eligible=0 ;;
-      *) duration_seen=1; command_eligible=0 ;;
-    esac
-  done
-
-  if (( expect_value )); then
-    return
-  fi
   if (( terminal_seen )); then
     COMPREPLY=( $(compgen -W "--lang" -- "$cur") )
     return
@@ -287,6 +288,65 @@ _timer_cli() {
     return
   fi
   COMPREPLY=( $(compgen -W "%[9]s ${option_candidates[*]}" -- "$cur") )
+}
+
+_timer_cli() {
+  # Bash before 4.3 reports COMP_POINT in bytes, newer Bash in characters.
+  # Do not replace a partial token while text remains to its right: Readline
+  # retains that suffix and can corrupt an already-valid argument.
+  if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3) )); then
+    local LC_ALL=C
+  fi
+  local line="${COMP_LINE-}"
+  local point="${COMP_POINT:-0}"
+  local next="${line:point:1}"
+  if [[ -n "${COMP_POINT-}" && -n "$next" && "$next" != [[:space:]] ]]; then
+    COMPREPLY=()
+    return 0
+  fi
+  local -a original_words=("${COMP_WORDS[@]}")
+  local original_cursor=$COMP_CWORD
+  local -a COMP_WORDS=()
+  local COMP_CWORD=0
+  local word gap prefix
+  local i index=-1 adjacent separator previous_separator=0
+
+  # Newer Bash versions split '=' and ':' into separate COMP_WORDS entries.
+  # Rejoin only adjacent pieces; a spaced or quoted '=' can be a title value.
+  for ((i = 0; i < ${#original_words[@]}; i++)); do
+    word="${original_words[i]}"
+    adjacent=0
+    if [[ -n "$word" && "$line" == *"$word"* ]]; then
+      gap="${line%%%%"$word"*}"
+      line="${line#*"$word"}"
+      if [[ -z "$gap" ]]; then adjacent=1; fi
+    fi
+    separator=0
+    case "$word" in =|:) separator=1 ;; esac
+    if (( index >= 0 && adjacent && (separator || previous_separator) )); then
+      COMP_WORDS[index]+="$word"
+    else
+      index=$((index + 1))
+      COMP_WORDS[index]="$word"
+    fi
+    previous_separator=$separator
+    if (( i == original_cursor )); then COMP_CWORD=$index; fi
+  done
+
+  _timer_cli_candidates
+
+  # Readline supplies the fragment it will replace as $2. Older Bash keeps
+  # the complete token in COMP_WORDS, so returning it would duplicate the
+  # prefix before a word break (for example 01:01:30 or --lang=--lang=es).
+  if (( $# >= 2 )) && [[ "${COMP_WORDS[COMP_CWORD]}" == *"$2" ]]; then
+    prefix="${COMP_WORDS[COMP_CWORD]%%"$2"}"
+    if [[ -n "$prefix" ]]; then
+      for ((i = 0; i < ${#COMPREPLY[@]}; i++)); do
+        COMPREPLY[i]="${COMPREPLY[i]#"$prefix"}"
+      done
+    fi
+  fi
+  return 0
 }
 complete -F _timer_cli %[1]s
 `, cliinfo.ProgramName, strings.Join(firstArgumentWords(), " "), strings.Join(cliinfo.Shells(), " "), strings.Join(flagNames(), " "), cliinfo.CommandCompletion, strings.Join(valueFlagNames(), "|"), strings.Join(valueFlagPatterns(), "|"), cliinfo.CommandVersion, strings.Join(cliinfo.DurationExamples(), " "), strings.Join(localize.Choices(), " "), canonicalCases, conflictCases)

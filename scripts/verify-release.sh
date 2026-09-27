@@ -26,6 +26,7 @@ fi
 cd "$repo_root"
 export LC_ALL=C
 export TZ=UTC
+export GOWORK=off
 
 tar_bin="${TAR_BIN:-tar}"
 date_bin="${DATE_BIN:-date}"
