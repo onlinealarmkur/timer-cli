@@ -9,6 +9,7 @@ die() {
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
+export GOWORK=off
 go_bin="${GO:-go}"
 
 [[ -x "$go_bin" ]] || command -v "$go_bin" >/dev/null 2>&1 || die "Go executable not found: $go_bin"

@@ -125,6 +125,11 @@ func startPTYProcess(t *testing.T, title string, args ...string) *ptyProcess {
 
 func startPTYProcessWithTerminal(t *testing.T, waitFor, terminalName string, args ...string) *ptyProcess {
 	t.Helper()
+	return startPTYCommandWithTerminal(t, waitFor, terminalName, exec.Command(ptyBinary(t), args...))
+}
+
+func startPTYCommandWithTerminal(t *testing.T, waitFor, terminalName string, command *exec.Cmd) *ptyProcess {
+	t.Helper()
 	master, slave, err := pty.Open()
 	if err != nil {
 		t.Fatalf("open PTY: %v", err)
@@ -143,7 +148,6 @@ func startPTYProcessWithTerminal(t *testing.T, waitFor, terminalName string, arg
 		t.Fatalf("capture initial PTY terminal state: %v", err)
 	}
 
-	command := exec.Command(ptyBinary(t), args...)
 	command.Stdin = slave
 	command.Stdout = slave
 	command.Stderr = slave
@@ -508,6 +512,69 @@ func TestPTYJSONCompletionUsesCRLFInRawMode(t *testing.T) {
 	}
 	if result.Status != "completed" {
 		t.Fatalf("JSON status = %q, want completed", result.Status)
+	}
+}
+
+func TestPTYControllingTerminalAliasUsesCRLF(t *testing.T) {
+	for _, mode := range []string{"plain", "json", "final-only"} {
+		t.Run(mode, func(t *testing.T) {
+			args := []string{"-c", `exec "$@" >/dev/tty`, "timer-cli-pty", ptyBinary(t), "1s", "--no-bell"}
+			marker := "Time's up!"
+			if mode != "plain" {
+				args = append(args, "--"+mode)
+			}
+			if mode == "json" {
+				marker = `"status":"completed"`
+			}
+			process := startPTYCommandWithTerminal(t, marker, "dumb", exec.Command("/bin/sh", args...))
+			exitCode, output := process.finish(ptyExitTimeout)
+			if exitCode != exitOK {
+				t.Fatalf("exit code=%d, want %d; output=%q", exitCode, exitOK, output)
+			}
+			assertOnlyCRLFLineEndings(t, output)
+			if strings.ContainsAny(output, "\x1b\a") {
+				t.Fatalf("plain terminal output contains control bytes: %q", output)
+			}
+			if mode == "json" && !json.Valid([]byte(output)) {
+				t.Fatalf("invalid JSON: %q", output)
+			}
+		})
+	}
+}
+
+func TestTerminalNeedsCRLFTracksOutputMode(t *testing.T) {
+	openTerminal := func() *os.File {
+		t.Helper()
+		master, slave, err := pty.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = slave.Close()
+			_ = master.Close()
+		})
+		return slave
+	}
+	input, output := openTerminal(), openTerminal()
+	if terminalNeedsCRLF(input) || terminalNeedsCRLF(output) {
+		t.Fatal("cooked terminals should translate LF themselves")
+	}
+	initial, err := term.MakeRaw(int(input.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = term.Restore(int(input.Fd()), initial) })
+	if !terminalNeedsCRLF(input) {
+		t.Fatal("raw terminal needs explicit CRLF")
+	}
+	if terminalNeedsCRLF(output) {
+		t.Fatal("raw input must not change line endings for a separate cooked output terminal")
+	}
+	if err := term.Restore(int(input.Fd()), initial); err != nil {
+		t.Fatal(err)
+	}
+	if terminalNeedsCRLF(input) {
+		t.Fatal("restored terminal should translate LF itself")
 	}
 }
 

@@ -176,6 +176,17 @@ extract_job_permissions() {
 	' "$1"
 }
 
+extract_step_section() {
+	local candidate="$1"
+	local step="$2"
+	TIMER_CLI_STEP="$step" awk '
+		$0 == "      - name: " ENVIRON["TIMER_CLI_STEP"] { count++; inside = 1; print; next }
+		/^      - / { inside = 0 }
+		inside { print }
+		END { if (count != 1) exit 1 }
+	' "$candidate"
+}
+
 extract_job_needs() {
 	awk '
 		$0 ~ /^    needs:/ {
@@ -383,9 +394,9 @@ validate_release_topology() {
 	[[ "$actual" == $'contents: read\nactions: read' ]] ||
 		{ topology_fail "verify permissions must be exactly contents and actions read"; return 1; }
 	actual="$(extract_job_permissions "$snap_job")" ||
-		{ topology_fail "snap permissions must be exactly contents: read"; return 1; }
-	[[ "$actual" == "contents: read" ]] ||
-		{ topology_fail "snap permissions must be exactly contents: read"; return 1; }
+		{ topology_fail "snap permissions must be exactly contents and actions read"; return 1; }
+	[[ "$actual" == $'contents: read\nactions: read' ]] ||
+		{ topology_fail "snap permissions must be exactly contents and actions read"; return 1; }
 	actual="$(extract_job_permissions "$assemble_job")" ||
 		{ topology_fail "assemble permissions must be exactly contents: read"; return 1; }
 	[[ "$actual" == "contents: read" ]] ||
@@ -433,7 +444,7 @@ validate_release_topology() {
 		$(job_action_count "$attest_job" "actions/upload-artifact@") != 0 ||
 		$(job_action_count "$release_job" "actions/upload-artifact@") != 0 ||
 		$(job_action_count "$verify_job" "actions/download-artifact@") != 0 ||
-		$(job_action_count "$snap_job" "actions/download-artifact@") != 1 ||
+		$(job_action_count "$snap_job" "actions/download-artifact@") != 2 ||
 		$(job_action_count "$assemble_job" "actions/download-artifact@") != 3 ||
 		$(job_action_count "$attest_job" "actions/download-artifact@") != 1 ||
 		$(job_action_count "$release_job" "actions/download-artifact@") != 1 ||
@@ -442,11 +453,36 @@ validate_release_topology() {
 		return 1
 	fi
 	if [[ "$(grep -Fxc '          overwrite: true' "$verify_job")" -ne 1 ||
-		"$(grep -Fxc '          overwrite: true' "$snap_job")" -ne 1 ||
+		"$(grep -Fxc '          overwrite: false' "$snap_job")" -ne 1 ||
 		"$(grep -Fxc '          overwrite: true' "$assemble_job")" -ne 1 ]]; then
-		topology_fail "artifact producers must safely replace their stable run artifacts on rerun"
+		topology_fail "artifact producers must preserve tested snaps and replace deterministic run artifacts"
 		return 1
 	fi
+	local job_file step step_file="$check_dir/snap-step.yml"
+	for job_file in "$verify_job" "$snap_job" "$assemble_job"; do
+		[[ "$(grep -Fxc '          retention-days: 90' "$job_file")" -eq 1 ]] ||
+			{ topology_fail "release artifacts must be retained for 90 days"; return 1; }
+	done
+	for step in 'Prepare native Snapcraft project' 'Build native snap' 'Stage newly built snap' 'Transfer tested native snap'; do
+		extract_step_section "$snap_job" "$step" >"$step_file" ||
+			{ topology_fail "snap build and upload steps must run only without a saved artifact"; return 1; }
+		[[ "$(grep -Fxc "        if: steps.existing-snap.outputs.artifact-id == ''" "$step_file")" -eq 1 ]] ||
+			{ topology_fail "snap build and upload steps must run only without a saved artifact"; return 1; }
+	done
+	extract_step_section "$snap_job" 'Restore previously tested snap' >"$step_file" || return 1
+	[[ "$(grep -Fxc "        if: steps.existing-snap.outputs.artifact-id != ''" "$step_file")" -eq 1 &&
+		"$(grep -Fxc '          artifact-ids: ${{ steps.existing-snap.outputs.artifact-id }}' "$step_file")" -eq 1 &&
+		"$(grep -Fxc '          path: dist-snap' "$step_file")" -eq 1 ]] ||
+		{ topology_fail "snap restore must download the validated artifact ID into dist-snap"; return 1; }
+	extract_step_section "$snap_job" 'Install and exercise snap' >"$step_file" || return 1
+	if grep -Eq '^        if:' "$step_file"; then
+		topology_fail "restored snaps must still be installed and exercised"
+		return 1
+	fi
+	extract_step_section "$snap_job" 'Find previously tested snap for this run' >"$step_file" || return 1
+	[[ "$(grep -Fxc "          SNAP_ARTIFACT_NAME: $snap_artifact_name" "$step_file")" -eq 1 &&
+		"$(grep -Fxc '        id: existing-snap' "$step_file")" -eq 1 ]] ||
+		{ topology_fail "snap lookup must select the exact current-run architecture artifact"; return 1; }
 	if (( $(job_action_count "$snap_job" "snapcore/action-build@") != 1 )); then
 		topology_fail "snap job must use the pinned official Snapcraft build action exactly once"
 		return 1
@@ -545,7 +581,8 @@ validate_release_topology() {
 		{ topology_fail "artifact transfers must use their exact identities"; return 1; }
 	[[ "$actual" == "$base_artifact_name" ]] ||
 		{ topology_fail "artifact transfers must use their exact identities"; return 1; }
-	actual="$(extract_action_artifact_name "$snap_job" "actions/download-artifact@")" ||
+	extract_step_section "$snap_job" 'Download verified base artifacts' >"$step_file" || return 1
+	actual="$(extract_action_artifact_name "$step_file" "actions/download-artifact@")" ||
 		{ topology_fail "artifact transfers must use their exact identities"; return 1; }
 	[[ "$actual" == "$base_artifact_name" ]] ||
 		{ topology_fail "artifact transfers must use their exact identities"; return 1; }
@@ -755,7 +792,7 @@ validate_ci_packaging_topology() {
 		"$(grep -Fxc '          brew style --formula "$style_formula"' "$homebrew_job")" -eq 1 ]] ||
 		{ topology_fail "Homebrew smoke must build, test, and style the generated formula with a local source"; return 1; }
 
-	[[ "$(grep -Fxc '      image: archlinux:base-devel-20260809.0.570793@sha256:49facfaf7eac45ed51ea3056091b8478191df5bcd62225e457e89c246b7cbda3' "$aur_job")" -eq 1 ]] ||
+	[[ "$(grep -Fxc '      image: archlinux:base-devel-20260920.0.596911@sha256:8745817f349ed24373341ddb92776209eeec3f0364ea48f7f645ac5800d30a50' "$aur_job")" -eq 1 ]] ||
 		{ topology_fail "AUR package smoke must pin the reviewed official Arch image digest"; return 1; }
 	[[ "$(grep -Fc 'makepkg --verifysource --noconfirm' "$aur_job")" -eq 1 &&
 		"$(grep -Fc 'makepkg --cleanbuild --clean --noconfirm' "$aur_job")" -eq 1 &&
@@ -1027,7 +1064,7 @@ expect_failure "CI AUR source verification removed" "AUR smoke must verify, buil
 	validate_ci_packaging_topology "$ci_topology_fixture"
 
 mutate_ci_job_line package-aur \
-	'      image: archlinux:base-devel-20260809.0.570793@sha256:49facfaf7eac45ed51ea3056091b8478191df5bcd62225e457e89c246b7cbda3' \
+	'      image: archlinux:base-devel-20260920.0.596911@sha256:8745817f349ed24373341ddb92776209eeec3f0364ea48f7f645ac5800d30a50' \
 	'      image: archlinux:base-devel'
 expect_failure "CI Arch image pin removed" "AUR package smoke must pin the reviewed official Arch image digest" \
 	validate_ci_packaging_topology "$ci_topology_fixture"
@@ -1115,7 +1152,28 @@ expect_failure "release title prefix drift" "guarded publisher must create a ver
 
 mutate_job_line verify '          overwrite: true' '          overwrite: false'
 expect_failure "stable release artifact overwrite disabled" \
-	"artifact producers must safely replace their stable run artifacts on rerun" \
+	"artifact producers must preserve tested snaps and replace deterministic run artifacts" \
+	validate_release_topology "$topology_fixture"
+
+mutate_job_line snap '          overwrite: false' '          overwrite: true'
+expect_failure "tested snaps overwritten on retry" \
+	"artifact producers must preserve tested snaps and replace deterministic run artifacts" \
+	validate_release_topology "$topology_fixture"
+
+mutate_job_line snap '          retention-days: 90' '          retention-days: 1'
+expect_failure "snap retry retention shortened" "release artifacts must be retained for 90 days" \
+	validate_release_topology "$topology_fixture"
+
+delete_job_line snap "        if: steps.existing-snap.outputs.artifact-id == ''"
+expect_failure "snap rebuild gate removed" "snap build and upload steps must run only without a saved artifact" \
+	validate_release_topology "$topology_fixture"
+
+mutate_job_line snap '          artifact-ids: ${{ steps.existing-snap.outputs.artifact-id }}' '          artifact-ids: 123'
+expect_failure "snap restore identity changed" "snap restore must download the validated artifact ID into dist-snap" \
+	validate_release_topology "$topology_fixture"
+
+insert_after_job_line snap '      - name: Install and exercise snap' "        if: steps.existing-snap.outputs.artifact-id == ''"
+expect_failure "restored snap validation bypassed" "restored snaps must still be installed and exercised" \
 	validate_release_topology "$topology_fixture"
 
 mutate_job_line verify '          name: timer-cli-base-${{ github.ref_name }}-${{ github.run_id }}' \
@@ -1147,6 +1205,68 @@ expect_failure "release validation removed" "release job must execute transferre
 mutate_job_line release "        run: *validate-transferred-artifacts" "        run: *different-validator"
 expect_failure "release validator alias drift" "release validation must reuse the transferred-artifact alias" \
 	validate_release_topology "$topology_fixture"
+
+# Execute the actual workflow lookup with a read-only fake API. These tests
+# never contact GitHub and cover fresh builds, retries, and fail-closed errors.
+snap_reuse_validator="$temp_root/reuse-snap.sh"
+awk '
+	$0 == "          # BEGIN SNAP ARTIFACT REUSE" { begin++; inside = 1; next }
+	$0 == "          # END SNAP ARTIFACT REUSE" { end++; inside = 0; next }
+	inside {
+		if (substr($0, 1, 10) != "          ") exit 1
+		print substr($0, 11)
+	}
+	END { if (begin != 1 || end != 1 || inside) exit 1 }
+' "$workflow" >"$snap_reuse_validator" || die "could not extract snap reuse validator"
+
+run_snap_reuse_fixture() (
+	set -euo pipefail
+	fixture_response="$1"
+	expected_output="$2"
+	export GITHUB_REPOSITORY=example/timer-cli GITHUB_RUN_ID=123
+	export GITHUB_SHA=1111111111111111111111111111111111111111
+	export SNAP_ARTIFACT_NAME=timer-cli-snap-amd64-v1.1.0-123
+	export GITHUB_OUTPUT="$temp_root/snap-reuse-output"
+	: >"$GITHUB_OUTPUT"
+	gh() {
+		[[ "$*" == 'api --paginate --slurp -H Accept: application/vnd.github+json repos/example/timer-cli/actions/runs/123/artifacts?per_page=100' ]] ||
+			{ echo "unexpected or mutating API request" >&2; return 1; }
+		if [[ "$fixture_response" == api-failure ]]; then
+			echo "fixture API failure" >&2
+			return 1
+		fi
+		printf '%s\n' "$fixture_response"
+	}
+	source "$snap_reuse_validator"
+	[[ "$(cat "$GITHUB_OUTPUT")" == "$expected_output" ]] ||
+		{ echo "incorrect artifact selection" >&2; exit 1; }
+)
+
+snap_response='[{"artifacts":[{"id":456,"name":"timer-cli-snap-amd64-v1.1.0-123","expired":false,"size_in_bytes":2048,"workflow_run":{"id":123,"head_sha":"1111111111111111111111111111111111111111"}}]}]'
+expect_success "fresh snap build has no artifact to restore" \
+	run_snap_reuse_fixture '[{"artifacts":[]}]' 'artifact-id='
+expect_success "full retry selects the original tested snap" \
+	run_snap_reuse_fixture "$snap_response" 'artifact-id=456'
+expect_success "snap lookup includes later API pages" \
+	run_snap_reuse_fixture "$(jq '[{artifacts:[]}] + .' <<<"$snap_response")" 'artifact-id=456'
+expect_success "snap lookup ignores another architecture" \
+	run_snap_reuse_fixture "$(jq '.[0].artifacts[0].name = "timer-cli-snap-arm64-v1.1.0-123"' <<<"$snap_response")" 'artifact-id='
+expect_failure "expired snap cannot be rebuilt silently" 'refusing to rebuild it' \
+	run_snap_reuse_fixture "$(jq '.[0].artifacts[0].expired = true' <<<"$snap_response")" ''
+expect_failure "snap from another run rejected" 'refusing to rebuild it' \
+	run_snap_reuse_fixture "$(jq '.[0].artifacts[0].workflow_run.id = 124' <<<"$snap_response")" ''
+expect_failure "snap from another commit rejected" 'refusing to rebuild it' \
+	run_snap_reuse_fixture "$(jq '.[0].artifacts[0].workflow_run.head_sha = "wrong"' <<<"$snap_response")" ''
+expect_failure "duplicate snap artifacts rejected" 'Duplicate Snap artifacts' \
+	run_snap_reuse_fixture "$(jq '.[0].artifacts += .[0].artifacts' <<<"$snap_response")" ''
+expect_failure "empty snap artifact rejected" 'refusing to rebuild it' \
+	run_snap_reuse_fixture "$(jq '.[0].artifacts[0].size_in_bytes = 0' <<<"$snap_response")" ''
+expect_failure "malformed snap artifact ID rejected" 'refusing to rebuild it' \
+	run_snap_reuse_fixture "$(jq '.[0].artifacts[0].id = "456"' <<<"$snap_response")" ''
+expect_failure "invalid snap lookup response rejected" 'Invalid artifact response' \
+	run_snap_reuse_fixture '[{}]' ''
+expect_failure "snap lookup API failure stops retry" 'fixture API failure' \
+	run_snap_reuse_fixture api-failure ''
 
 publisher_fixture="$temp_root/publisher-fixture"
 publisher_commit_sha="1111111111111111111111111111111111111111"
@@ -1657,13 +1777,29 @@ printf '%s\n' "${installed_go_version#go}" >"$package_fixture/.go-version"
 expect_failure "valid release Go version file" "required tool not found: $TAR_BIN" \
 	run_package_fixture
 
+# A caller's workspace must not influence toolchain selection, source version,
+# linked dependencies, or notices. An invalid external workspace makes any
+# accidental use fail immediately, without downloading a replacement module.
+external_workspace="$temp_root/external.go.work"
+printf 'invalid external workspace\n' >"$external_workspace"
+expect_success "source version ignores external Go workspace" \
+	env GO="$go_bin" GOWORK="$external_workspace" bash "$script_dir/source-version.sh"
+expect_failure "packager ignores external Go workspace before toolchain selection" \
+	"required tool not found: $TAR_BIN" \
+	env GO="$go_bin" GOWORK="$external_workspace" bash "$package_fixture/scripts/package-release.sh" "$source_version"
+expect_failure "verifier ignores external Go workspace" \
+	"source version mismatch: expected 'timer-cli $mismatch_version', got 'timer-cli $source_version'" \
+	env GO="$go_bin" GOWORK="$external_workspace" bash "$script_dir/verify-release.sh" "$mismatch_version"
+expect_success "license generation ignores external Go workspace" \
+	env GO="$go_bin" GOWORK="$external_workspace" bash "$script_dir/generate-third-party-licenses.sh"
+
 package_integrity_fixture="$temp_root/package-integrity-fixture"
 mkdir -p "$package_integrity_fixture"
 while IFS= read -r -d '' path; do
 	[[ -e "$repo_root/$path" || -L "$repo_root/$path" ]] || continue
 	mkdir -p "$package_integrity_fixture/$(dirname "$path")"
 	cp -p "$repo_root/$path" "$package_integrity_fixture/$path"
-done < <(git -C "$repo_root" ls-files -z --cached)
+done < <(git -C "$repo_root" ls-files -z --cached --others --exclude-standard)
 # The compatibility jobs run this fixture with their selected Go patch. Exact
 # release-toolchain rejection is covered independently above; these scenarios
 # must reach the repository-integrity checks they are designed to exercise.
@@ -1738,6 +1874,37 @@ printf 'ignored package output\n' >"$package_integrity_fixture/dist/previous-art
 printf 'ignored coverage output\n' >"$package_integrity_fixture/coverage.out"
 expect_failure "clean package source permits ignored outputs" "source epoch could not be formatted" \
 	run_package_integrity_fixture "$source_version"
+
+# Reach the real binary-build command with all earlier packaging checks intact.
+# Only the final build is intercepted; version discovery and dependency/license
+# inspection use the installed Go toolchain, with networking disabled.
+workspace_tools="$temp_root/workspace-tools"
+mkdir -p "$workspace_tools"
+cat >"$workspace_tools/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == build ]]; then
+	[[ "${GOWORK:-}" == off ]] || { echo "binary build inherited an external workspace" >&2; exit 98; }
+	echo "workspace-isolated binary build reached" >&2
+	exit 97
+fi
+exec "$TIMER_CLI_REAL_GO" "$@"
+EOF
+cat >"$workspace_tools/date" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == --version ]]; then
+	echo "date (GNU coreutils) fixture"
+else
+	echo "2026-01-01T00:00:00Z"
+fi
+EOF
+chmod 0755 "$workspace_tools/go" "$workspace_tools/date"
+expect_failure "release binary build ignores external Go workspace" \
+	"workspace-isolated binary build reached" \
+	env GO="$workspace_tools/go" TIMER_CLI_REAL_GO="$go_bin" GOWORK="$external_workspace" \
+		GOPROXY=off GOSUMDB=off TAR_BIN="$package_integrity_tools/tar" \
+		DATE_BIN="$workspace_tools/date" SHA256SUM_BIN="$package_integrity_tools/sha256sum" \
+		bash "$package_integrity_fixture/scripts/package-release.sh" "$source_version" "$temp_root/workspace-output"
 
 transferred_fixture="$temp_root/transferred-artifacts"
 write_transferred_fixture() {

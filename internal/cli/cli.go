@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 
 	"github.com/onlinealarmkur/timer-cli/internal/alert"
@@ -155,7 +156,7 @@ func runWithKeyboardAndSuspension(ctx context.Context, args []string, stdin *os.
 		if controller != nil {
 			actions = controller.Actions()
 			inputErrors = controller.Errors()
-			rawTerminal = sameTerminalDevice(stdin, stdoutFile)
+			rawTerminal = terminalNeedsCRLF(stdoutFile)
 		}
 	}
 	rendererOptions := terminalui.Options{
@@ -283,19 +284,17 @@ func terminalFile(w io.Writer) (*os.File, bool) {
 	return f, term.IsTerminal(int(f.Fd()))
 }
 
-func sameTerminalDevice(first, second *os.File) bool {
-	if first == nil || second == nil {
+// terminalNeedsCRLF checks output processing, not file identity: /dev/tty and
+// its underlying terminal have different file identities but share settings.
+func terminalNeedsCRLF(output *os.File) bool {
+	if output == nil {
 		return false
 	}
-	firstInfo, err := first.Stat()
+	attrs, err := unix.IoctlGetTermios(int(output.Fd()), ioctlReadTermios)
 	if err != nil {
 		return false
 	}
-	secondInfo, err := second.Stat()
-	if err != nil {
-		return false
-	}
-	return os.SameFile(firstInfo, secondInfo)
+	return attrs.Oflag&unix.OPOST == 0 || attrs.Oflag&unix.ONLCR == 0
 }
 
 func asciiOutput(force bool, getenv func(string) string) bool {

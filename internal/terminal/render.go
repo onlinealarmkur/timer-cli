@@ -32,7 +32,7 @@ var terminalWidth = &runewidth.Condition{StrictEmojiNeutral: true}
 // Options controls output capabilities and presentation.
 type Options struct {
 	TTY bool
-	// RawTerminal means output shares the terminal currently in raw keyboard mode.
+	// RawTerminal means the output terminal does not translate LF to CRLF.
 	RawTerminal bool
 	Fullscreen  bool
 	ASCII       bool

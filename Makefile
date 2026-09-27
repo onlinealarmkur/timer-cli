@@ -1,4 +1,4 @@
-.PHONY: all build test coverage coverage-check race vet lint vuln fmt-check module-verify module-tidy-check license-check licenses shellcheck-require shell-lint workflow-lint release-doc-check release-guard-test package package-check clean
+.PHONY: all build test coverage coverage-check race vet lint vuln fmt-check module-verify module-tidy-check license-check licenses make-guard-test shellcheck-require shell-lint workflow-lint release-doc-check release-guard-test package package-check clean
 
 GO ?= go
 GOFLAGS ?=
@@ -6,7 +6,7 @@ GOFMT ?= $(shell $(GO) env GOROOT)/bin/gofmt
 SHELLCHECK ?= shellcheck
 COVERAGE_MIN ?= 95.0
 
-all: fmt-check module-verify module-tidy-check license-check vuln shell-lint workflow-lint release-doc-check release-guard-test vet test coverage-check race lint build
+all: fmt-check module-verify module-tidy-check license-check make-guard-test vuln shell-lint workflow-lint release-doc-check release-guard-test vet test coverage-check race lint build
 
 build:
 	mkdir -p bin
@@ -53,7 +53,7 @@ module-tidy-check:
 	$(GO) mod tidy -diff
 
 license-check:
-	@notice="$$(mktemp)"; \
+	@set -eu; notice="$$(mktemp)"; \
 		trap 'rm -f "$$notice"' EXIT INT TERM; \
 		{ test ! -e THIRD_PARTY_LICENSES && test ! -L THIRD_PARTY_LICENSES; } || { \
 			echo "THIRD_PARTY_LICENSES is generated for release artifacts and must not exist at the repository root"; \
@@ -69,6 +69,9 @@ licenses:
 	mkdir -p dist
 	GO="$(GO)" bash scripts/generate-third-party-licenses.sh >dist/THIRD_PARTY_LICENSES
 	@echo "Third-party license notices written to dist/THIRD_PARTY_LICENSES"
+
+make-guard-test:
+	bash scripts/test-make-guards.sh
 
 shellcheck-require:
 	@command -v "$(SHELLCHECK)" >/dev/null 2>&1 || { \
@@ -91,7 +94,7 @@ release-doc-check:
 release-guard-test:
 	GO="$(GO)" bash scripts/test-release-guards.sh
 
-package package-check: VERSION ?= $(shell bash scripts/source-version.sh)
+package package-check: VERSION ?= $(shell GO="$(GO)" bash scripts/source-version.sh)
 
 package:
 	GO="$(GO)" bash scripts/package-release.sh "$(VERSION)" dist

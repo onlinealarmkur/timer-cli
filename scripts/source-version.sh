@@ -10,6 +10,8 @@ die() {
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
 cd "$repo_root"
+# Ignore parent workspaces and caller-supplied replacements before invoking Go.
+export GOWORK=off
 
 go_bin="${GO:-go}"
 command -v "$go_bin" >/dev/null 2>&1 || die "required tool not found: $go_bin"
