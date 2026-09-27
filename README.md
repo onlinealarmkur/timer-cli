@@ -358,11 +358,6 @@ verified source archive, and each snap contains the tested Linux binary for
 its architecture. Publishing to the Homebrew tap, AUR, and Snap Store is a
 separate maintainer step.
 
-## Online timer
-
-Use the [Online Alarm Kur timer](https://onlinealarmkur.com/timer/en/) in a web
-browser.
-
 ## License
 
 The source code uses the [MIT License](LICENSE). Created by

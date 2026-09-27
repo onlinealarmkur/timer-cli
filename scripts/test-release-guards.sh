@@ -1228,6 +1228,8 @@ run_snap_reuse_fixture() (
 	export SNAP_ARTIFACT_NAME=timer-cli-snap-amd64-v1.1.0-123
 	export GITHUB_OUTPUT="$temp_root/snap-reuse-output"
 	: >"$GITHUB_OUTPUT"
+	# The dynamically sourced Snap lookup calls this command shim.
+	# shellcheck disable=SC2317
 	gh() {
 		[[ "$*" == 'api --paginate --slurp -H Accept: application/vnd.github+json repos/example/timer-cli/actions/runs/123/artifacts?per_page=100' ]] ||
 			{ echo "unexpected or mutating API request" >&2; return 1; }
