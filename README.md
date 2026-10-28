@@ -108,7 +108,7 @@ sudo snap install timer-cli
 Or install the exact release from source with Go 1.26 or newer:
 
 ```sh
-go install github.com/onlinealarmkur/timer-cli/cmd/timer-cli@v1.1.0
+go install github.com/onlinealarmkur/timer-cli/cmd/timer-cli@v1.1.1
 ```
 
 ### Manual install
@@ -119,7 +119,7 @@ Linux. Intel/x86-64 is `amd64`, while Apple Silicon/AArch64 is `arm64`.
 Download the matching archive and manifest from the same release:
 
 ```sh
-VERSION=1.1.0
+VERSION=1.1.1
 TARGET=darwin_arm64
 ARCHIVE="timer-cli_${VERSION}_${TARGET}.tar.gz"
 RELEASE_URL="https://github.com/onlinealarmkur/timer-cli/releases/download/v${VERSION}"
